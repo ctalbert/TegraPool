@@ -5,10 +5,20 @@ import ldap
 import re
 import shutil
 import subprocess 
+import urllib, urllib2
 import os
 import stat
 from ftplib import FTP
 from devicemanagerSUT import DeviceManagerSUT
+import ConfigParser
+
+
+config = ConfigParser.ConfigParser()
+config.read("dbsettings.ini")
+SQL_HOST = config.get("database", "MYSQL_SERVER")
+SQL_USER = config.get("database", "MYSQL_USER")
+SQL_PASSWD = config.get("database", "MYSQL_PASSWD")
+SQL_DB = config.get("database", "MYSQL_DB")
 
 # URLs go here. "/api/" will be automatically prepended to each.
 urls = ( "/checkout/", "CheckoutHandler", "/checkin/", "CheckinHandler",
@@ -66,26 +76,20 @@ def ldapQuery(user, password):
   return user, email
 
 #This is the function which, if someone is going remote, will set up a quick temporary account for them.
-def initUser(user,ftpSite, ip):
-  username = user[:user.find('@')]
-  #If they don't already have an account, create one for them.
-  if not os.access('/Users/'+username, os.F_OK):
-    os.makedirs('/Users/'+username+'/')
-    #subprocess.call(["sudo", "mkdir", "/Users/"+username])
-    subprocess.call(["sudo", "dscl",".","create","/Users/"+username])
-    subprocess.call(["sudo", "dscl",".","create","/Users/"+username, "PrimateGroupID", "21"])
-    subprocess.call(["sudo", "dscl",".","create","/Users/"+username, "UniqueID", "999"])
-    subprocess.call(["sudo", "dscl",".","passwd","/Users/"+username, "giveMEtegra"])
-    subprocess.call(["sudo", "dscl",".","create","/Users/"+username, "NFSHomeDirectory", "/Users/"+username])
-    subprocess.call(["sudo", "chmod","0777", "/Users/"+username])
-   
+def initUser(username,ftpSite, ip):
   #Go to the FTP Site and collect the APK and ZIP files.
   ftpDir = ftpSite[ftpSite.find('/pub/'):]
   print "ftpDir = " + str(ftpDir)
   #Make sure to get back to the current directory after this function so that there are no issues later
   currDir = os.getcwd()
+  db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
+  c = db.cursor()
+  c.execute("SELECT directory FROM users WHERE userid='" + username + "';")
+  userdir = c.fetchone()[0]
+  c.close()
+  db.close() 
   try:
-    os.chdir('/Users/' + username)
+    os.chdir(userdir)
     ftp = FTP('ftp.mozilla.org');
     ftp.login();
     ftp.cwd(ftpDir)
@@ -110,6 +114,7 @@ def initUser(user,ftpSite, ip):
     refFileName = "runRefRemote.sh"
     talosFileName = "runTalosRemote.sh"
     talosConfigFile = "tpan.yml"
+    
     #Because there could be alternate builds on alternate devices, we add the ip to the name for everything past the first one. 
     if os.access(fennecFile+".apk", os.F_OK):
       fennecFile += ip.replace(".","");
@@ -126,29 +131,34 @@ def initUser(user,ftpSite, ip):
     uniqueNumber = str(10000+int(IPaddr[2])*1000+int(IPaddr[3]))
     #Create the scripts for each of the test types.
     mochiTestScript = open(mochiFileName, "w")
-    mochiTestScript.write("unzip "+testsFile+"\nadb disconnect\nadb connect "+ip+"\nadb uninstall org.mozilla.fennec\nadb install "+fennecFile+"\npython mochitest/runtestsremote.py --deviceIP="+ip+" --devicePort=20701 --appname=org.mozilla.fennec --xre-path=/objdir/dist/bin --utility-path=/objdir/dist/bin --http-port="+uniqueNumber);
+    mochiTestScript.write("unzip "+testsFile+"\nadb disconnect\nadb connect "+ip+"\nadb uninstall org.mozilla.fennec\nadb install "+fennecFile+"\npython mochitest/runtestsremote.py --deviceIP="+ip+" --devicePort=20701 --appname=org.mozilla.fennec --xre-path=ffxbin --utility-path=ffxbin --http-port="+uniqueNumber);
     mochiTestScript.close();
     talosTestScript = open(talosFileName, "w")
     talosTestScript.write("adb disconnect\nadb connect "+ip+"\nadb uninstall org.mozilla.fennec\nadb install "+fennecFile+"\ncd /talos\npython remotePerfConfigurator.py -v -e org.mozilla.fennec --activeTests tpan --resultsServer '' --resultsLink '' --output ~/"+talosConfigFile+" --remoteDevice "+ip+" --webServer tegrapool.build.mtv1.mozilla.com:8080\npython run_tests.py -d -n ~/"+talosConfigFile+"\ncd ~");
     talosTestScript.close();
     refTestScript = open(refFileName, "w")
-    refTestScript.write("unzip "+testsFile+"\nadb disconnect\nadb connect "+ip+"\nadb uninstall org.mozilla.fennec\nadb install "+fennecFile+"\npython reftest/remotereftest.py --deviceIP="+ip+" --appname=org.mozilla.fennec --xre-path=/objdir/dist/bin --utility-path=/objdir/dist/bin --http-port="+uniqueNumber+" --ignore-window-size reftest/tests/layout/reftests/reftest-sanity/reftest.list");
+    refTestScript.write("unzip "+testsFile+"\nadb disconnect\nadb connect "+ip+"\nadb uninstall org.mozilla.fennec\nadb install "+fennecFile+"\npython reftest/remotereftest.py --deviceIP="+ip+" --appname=org.mozilla.fennec --xre-path=ffxbin --utility-path=ffxbin --http-port="+uniqueNumber+" --ignore-window-size reftest/tests/layout/reftests/reftest-sanity/reftest.list");
     refTestScript.close();
     #Make the three scripts totally readable and runnable.
     os.chmod(mochiFileName, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO);
     os.chmod(talosFileName, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO);
     os.chmod(refFileName, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO);
+    
+    # Get the linux 64 binaries to run the local test system tools - land them in ffxbin
+    getLocalUserTestBinaries(userdir, currDir)
   finally:
     #Return to the old directory. Don't get stuck in a directory that will be destroyed
     os.chdir(currDir)
 
 #Remove the temporary user if he exists.
-def unInitUser(user):
-  username = user[:user.find('@')];
-  if os.access('/Users/'+username+'/', os.F_OK):
-    shutil.rmtree('/Users/'+username+'/')
-    #subprocess.call(["sudo", "rm", "-rf", "/Users/"+username+"/"])
-    subprocess.call(["sudo", "dscl",".","delete","/Users/"+username]);
+def unInitUser(username):
+  db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
+  c = db.cursor()
+  c.execute("SELECT directory FROM users WHERE userid='" + username + "';")
+  userdir = c.fetchone()[0]
+  c.close()
+  db.close() 
+  subprocess.call(["sh", "rmdirs.sh", userdir])
 
 #Good to know if the user needs to be removed.
 def isUserStillActive(email, db):
@@ -160,6 +170,38 @@ def isUserStillActive(email, db):
   c.close()
   return False
 
+# Get the linux 64 build and test bits to run tests, assume that we
+# are already working in the "user" directory and create the ffxbin
+# directory with everything we need in it
+def getLocalUserTestBinaries(userdir, mydir):
+  os.mkdir(os.path.join(userdir, "temp"))
+  os.chdir(os.path.join(userdir, "temp"))
+  ffxregex = re.compile("firefox.*\en-US.linux-x86_64.tar.bz2")
+  testregex = re.compile("firefox.*\en-US.linux-x86_64.tests.zip")
+  url = "ftp://ftp.mozilla.org/pub/mozilla.org/firefox/nightly/latest-mozilla-central/"
+  f = urllib2.urlopen(url)
+  ffxfile = None
+  testfile = None
+  for line in f:
+    filename = line.split(' ')[-1].strip()
+    if ffxregex.match(filename):
+      # Download our build
+      fileurl = url + filename
+      ffxfile, hdrs = urllib.urlretrieve(fileurl)
+    if testregex.match(filename):
+      # Download the tests
+      fileurl = url + filename
+      testfile, hdrs = urllib.urlretrieve(fileurl)
+
+  # Call our simple utility that creates a ffxbin
+  # in our user directory
+  createffxbin = os.path.join(mydir, "createffxbin.sh")
+  subprocess.call(["sh", createffxbin, userdir, ffxfile, testfile])
+  
+  # Delete our temp location
+  shutil.rmtree(os.path.join(userdir, "temp"))
+  os.chdir(userdir)
+      
 #Finds an available device to use.
 #The devices are stored in a MySQL Database table 'devices'
 def findUnusedDevice(deviceType, user, password, remote, ftp=None):
@@ -169,8 +211,7 @@ def findUnusedDevice(deviceType, user, password, remote, ftp=None):
   if not user:
     return "Bad Username Or Password"
   #Setup DB Connection
-  db = MySQLdb.connect(user="tegra",passwd="pool",db="TegraPool")
-  activeUser = isUserStillActive(user, db)
+  db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
   c = db.cursor()
   #Lock the table, as we don't want people checking them out simultaneously
   c.execute("LOCK TABLE devices WRITE;")
@@ -183,10 +224,17 @@ def findUnusedDevice(deviceType, user, password, remote, ftp=None):
     c.close()
     db.commit()
     setupDevice(row[0])
+    c = db.cursor()
     print "Remote = " + str(remote)
-    if remote and ftp and not activeUser:
-      initUser(email, ftp, row[0]);
-    return row[0]
+    usrname = ''
+    if remote and ftp:
+      c.execute("SELECT localuser FROM devices WHERE deviceIP='" + row[0] + "';")
+      usrname = c.fetchone()[0]
+      print "Got usrname: %s" % usrname
+      initUser(usrname, ftp, row[0]);
+      c.close()
+      db.close()
+    return row[0],usrname
   c.execute("UNLOCK TABLES;");
   c.close()
   db.commit()
@@ -203,7 +251,7 @@ def makeDeviceAvailable(ip):
   else:
     print "Not satisying Regex"
     return False;
-  db = MySQLdb.connect(user="tegra",passwd="pool",db="TegraPool")
+  db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
   c = db.cursor();
   c.execute("LOCK TABLE devices WRITE;")
   c.execute("SELECT state, email FROM devices WHERE deviceIP = '" + ip + "';")
@@ -218,10 +266,11 @@ def makeDeviceAvailable(ip):
   c.execute("UPDATE devices SET state = 'REBOOTING', user = NULL, email = NULL WHERE deviceIP = '" + ip + "';")
   c.execute("UNLOCK TABLES;")
   db.commit()
+  c.execute("SELECT localuser FROM devices WHERE deviceIP = '" + ip + "';")
+  username = c.fetchone()[0]
   c.close()
-  if not isUserStillActive(email, db):
-    unInitUser(email)
   db.close()
+  unInitUser(username)
   resetDevice(ip)
   return True
 
@@ -233,7 +282,7 @@ def getUsedList(email):
     email = emailMatch.groups()[0]
   else:
     return [];
-  db = MySQLdb.connect(user="tegra",passwd="pool",db="TegraPool")
+  db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
   c = db.cursor();
   c.execute("SELECT deviceid, deviceIP FROM devices WHERE email = '"
             + email + "';")
@@ -263,17 +312,21 @@ class CheckoutHandler(object):
     postdata = web.input()
     args, body = templeton.handlers.get_request_parms()
     print("User " + postdata["user"] + " Checked out device of type " + postdata["deviceType"])
-    newDeviceIP = findUnusedDevice(postdata["deviceType"],
-                                   postdata["user"],
-                                   postdata["password"],
-                                   postdata["remote"],
-                                   postdata["ftp"])
+    newDeviceIP, localuser = findUnusedDevice(postdata["deviceType"],
+                                              postdata["user"],
+                                              postdata["password"],
+                                              postdata["remote"],
+                                              postdata["ftp"])
+    rtndata = {}
     if newDeviceIP and "Bad" in newDeviceIP:
-      return newDeviceIP
+      rtndata["msg"] = rtnnewDeviceIP
     elif newDeviceIP:
-      return "IP = " + newDeviceIP
+      rtndata["msg"] = "IP = " + newDeviceIP
+      rtndata["ip"] = newDeviceIP
+      rtndata["user"] = localuser
     else:
-      return "No available devices of requested type."
+      rtndata["msg"] = "No available devices of requested type."
+    return {"data": rtndata}
 
 #Handles checkin queries. Input is IP of the device checked out.
 #NOTE: Might be weird if IPs are changing.
@@ -307,7 +360,7 @@ class PrintDBHandler(object):
   def GET(self):
     print("Accessing entire device DB")
     args, body = templeton.handlers.get_request_parms()
-    db = MySQLdb.connect(user="tegra",passwd="pool",db="TegraPool")
+    db = MySQLdb.connect(user=SQL_USER,passwd=SQL_PASSWD,db=SQL_DB)
     result = getTable(db)
     responseDict = {}
     for key in result:

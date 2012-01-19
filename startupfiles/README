@@ -1,0 +1,44 @@
+Welcome to the Tegra Pool VM.
+
+This machine controls the access to the tegra pool and maintains the database
+that keeps track of the status of the machines available for checkout from the
+tegra pool.
+
+= To Add a New Device To the Pool =
+1. Create a new user account for the device on this machine:
+1a. Set the username to something simple, like "deviceX" where "device" is the type of 
+    device and X is the number of those devices in the pool.
+1b. Set the password of this user account to 'giveMEtegra' (no quotes)
+2. Ensure the device has the SUTAgent running on it and that it is installed
+3. Run /home/mozauto/add_new_device.py:
+3a. python add_new_device.py --ip=<ip address of device> --user=<user you created in step 1>
+3b. Reboot the device and it will automatically register and add itself into the pool
+
+= Services running by default =
+* /home/mozauto/TegraPool/server/portWatcher.py - this is what listens for new devices upon reboot
+            it ensures that the devices are registered in the database and have the proper state.
+* /home/mozauto/TegraPool/server/server.py - this runs the website that users can interact with
+            the system.  To run it with port 80: python server.py 80
+
+= To Deploy a New System =
+* Put the startupfiles on the root of the main user of the box
+* Put the html and server directories into a "TegraPool" directory
+* Copy the .conf scripts into /etc/init
+* ensure the start_* scripts are exectuable (and their paths in the conf scripts are correct)
+* install templeton (https://github.com/markrcote/templeton) into your python path
+* install the android-sdk and ensure that adb (<android-sdk-dir>/platform-tools/adb) is on
+  the path for all users
+* create a dbsettings.ini file in the TegraPool/server directory.  It should have the
+  form:
+[database]
+MYSQL_SERVER = <mysql host>
+MYSQL_USER = <mysql user for tegrapool>
+MYSQL_PASSWD = <mysql passwd for tegrapool>
+MYSQL_DB = <mysql db for tegrapool>
+
+Once you have this file you can run TegraPool/server/createDB.py to create your database.
+
+= Security =
+This system is inherently unsecure (if you read this readme you know how to ssh into the box for
+goodness sake).  DO NOT DEPLOY THIS ON A WEB ACCESSIBLE SYSTEM.  Only deploy this on a system protected
+behind a strong firewall.

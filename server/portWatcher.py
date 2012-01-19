@@ -2,6 +2,15 @@ import socket
 import urlparse
 import MySQLdb
 
+import ConfigParser
+
+config = ConfigParser.ConfigParser()
+config.read("dbsettings.ini")
+SQL_HOST = config.get("database", "MYSQL_SERVER")
+SQL_USER = config.get("database", "MYSQL_USER")
+SQL_PASSWD = config.get("database", "MYSQL_PASSWD")
+SQL_DB = config.get("database", "MYSQL_DB")
+
 #Set up the port to be listened on. 
 HOST = ''
 PORT = 28001
@@ -21,9 +30,15 @@ while 1:
   data = data.lstrip("register ")
   info = urlparse.parse_qs(data)
   #print info
-  print "NAME = " + info['NAME'][0]
-  print "IP = " + info['IPADDR'][0]
-  print "TYPE = " + info['HARDWARE'][0]
+  devicename = info['NAME'][0].strip()
+  deviceip = info['IPADDR'][0].strip()
+  devicehw = info['HARDWARE'][0].strip()
+  deviceusr = info['POOL'][0].strip()
+
+  print "NAME = " + devicename
+  print "IP = " + deviceip
+  print "TYPE = " + devicehw
+  print "USER = " + deviceusr
   #When a ping arrives, store the information in the devices table.
   #NOTE: Issue occurs if the PINGs arrive faster than
   #data can be written to the database.
@@ -31,14 +46,14 @@ while 1:
   db = False
   while not inputted:
     try:
-      db = MySQLdb.connect(user="tegra",db="TegraPool")
+      db = MySQLdb.connect(user=SQL_USER, passwd=SQL_PASSWD, db=SQL_DB)
       c=db.cursor();
       c.execute("LOCK TABLE devices WRITE");
-      c.execute("INSERT INTO devices (deviceid,deviceIP,deviceType,state) VALUES ('"+
-                 info['NAME'][0]+"','" + info['IPADDR'][0] +"','"+ info['HARDWARE'][0] +
-                 "','AVAILABLE') ON DUPLICATE KEY UPDATE state='AVAILABLE';")
+      c.execute("INSERT INTO devices (deviceid,deviceIP,deviceType,state, localuser) VALUES ('"+
+                 devicename +"','" + deviceip +"','"+ devicehw +
+                 "','AVAILABLE','" + deviceusr + "') ON DUPLICATE KEY UPDATE state='AVAILABLE';")
       c.execute("UPDATE devices SET state='CHECKED_OUT' WHERE deviceIP ='" +
-                info['IPADDR'][0] + "' AND user IS NOT NULL;")
+                deviceip + "' AND user IS NOT NULL;")
       c.execute("UNLOCK TABLES;")
       db.commit()
       c.close()

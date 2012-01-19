@@ -110,11 +110,13 @@ $(document).ready(function() {
               },
         success: function(data) {
           loadTable();
+          var sshuser = data.data.user;
+          var ip = data.data.ip;
           if(document.getElementById('checkout-remote').checked ) {
-            alert(data + "\nYou can run tests by ssh-ing to "+$('#checkout-user').val().split('@')[0]+"@10.250.2.108 with the password giveMEtegra");
+            alert(data.data.msg + "\nYou can run tests by ssh-ing to "+ sshuser +"@10.250.7.80 with the password giveMEtegra");
           }
           else {
-            alert(data);
+            alert(data.data.msg);
           }
         },
         error: function(obj, textStatus, errorThrown) {
